@@ -48,14 +48,14 @@ type Config struct {
 	StorageAccountKey  string             `yaml:"storage_account_key"`
 	ContainerName      string             `yaml:"container"`
 	Endpoint           string             `yaml:"endpoint"`
-	UserAssignedID     string             `yaml:"user_assigned_id"`
 	MaxRetries         int                `yaml:"max_retries"`
 	ReaderConfig       ReaderConfig       `yaml:"reader_config"`
 	PipelineConfig     PipelineConfig     `yaml:"pipeline_config"`
 	HTTPConfig         exthttp.HTTPConfig `yaml:"http_config"`
+	MSIResource        string             `yaml:"msi_resource"`
 
 	// Deprecated: Is automatically set by the Azure SDK.
-	MSIResource string `yaml:"msi_resource"`
+	WorkloadIdentity workloadIdentityCredential
 }
 
 type ReaderConfig struct {
@@ -69,11 +69,52 @@ type PipelineConfig struct {
 	MaxRetryDelay model.Duration `yaml:"max_retry_delay"`
 }
 
+type workloadIdentityCredential struct {
+	assertion string
+	file      string
+	lastRead  time.Time
+	clientID  string
+	tenantID  string
+}
+
+// getAssertion reads the assertion from the file and returns it
+// if the file has not been read in the last 5 minutes
+func (w *workloadIdentityCredential) getAssertion(context.Context) (string, error) {
+	if now := time.Now(); w.lastRead.Add(5 * time.Minute).Before(now) {
+		content, err := os.ReadFile(w.file)
+		if err != nil {
+			return "", err
+		}
+		w.assertion = string(content)
+		w.lastRead = now
+	}
+	return w.assertion, nil
+}
+
 // Validate checks to see if any of the config options are set.
 func (conf *Config) validate() error {
 	var errMsg []string
-	if conf.UserAssignedID != "" && conf.StorageAccountKey != "" {
-		errMsg = append(errMsg, "user_assigned_id cannot be set when using storage_account_key authentication")
+
+	if conf.StorageAccountKey == "" {
+
+		// If the storage account key is not set, then we need to check if the workload identity is set
+		if conf.WorkloadIdentity.clientID == "" {
+			errMsg = append(errMsg, "AZURE_CLIENT_ID environment variable is not set")
+		}
+		if conf.WorkloadIdentity.tenantID == "" {
+			errMsg = append(errMsg, "AZURE_TENANT_ID environment variable is not set")
+		}
+		if conf.WorkloadIdentity.file == "" {
+			errMsg = append(errMsg, "AZURE_FEDERATED_TOKEN_FILE environment variable is not set")
+		}
+		if conf.WorkloadIdentity.assertion == "" {
+			errMsg = append(errMsg, "AZURE_FEDERATED_TOKEN_FILE is empty")
+		}
+
+		// If any of the above are not set, then we need to return an error
+		if len(errMsg) > 0 {
+			errMsg = append(errMsg, "storage_account_key or AZURE_WORKLOAD_IDENTITY are required but not configured")
+		}
 	}
 
 	if conf.StorageAccountName == "" {
@@ -89,6 +130,9 @@ func (conf *Config) validate() error {
 	}
 
 	if conf.ReaderConfig.MaxRetryRequests < 0 {
+		errMsg = append(errMsg, "The value of max_retry_requests must be greater than or equal to 0 in the config file")
+	}
+	if conf.WorkloadIdentity.clientID != "" {
 		errMsg = append(errMsg, "The value of max_retry_requests must be greater than or equal to 0 in the config file")
 	}
 
@@ -121,6 +165,20 @@ func parseConfig(conf []byte) (Config, error) {
 			config.ReaderConfig.MaxRetryRequests = config.MaxRetries
 		}
 	}
+	// If we don't have a storage account key, we are using workload identity
+	if config.StorageAccountKey == "" {
+		clientID := os.Getenv("AZURE_CLIENT_ID")
+		tenantID := os.Getenv("AZURE_TENANT_ID")
+		tokenFilePath := os.Getenv("AZURE_FEDERATED_TOKEN_FILE")
+		content, err := os.ReadFile(tokenFilePath)
+		if err != nil {
+			return Config{}, err
+		}
+		assertion := string(content)
+
+		workloadIdentity := workloadIdentityCredential{assertion, tokenFilePath, time.Now(), clientID, tenantID}
+		config.WorkloadIdentity = workloadIdentity
+	}
 
 	return config, nil
 }
@@ -140,9 +198,7 @@ func NewBucket(logger log.Logger, azureConfig []byte, component string) (*Bucket
 	if err != nil {
 		return nil, err
 	}
-	if conf.MSIResource != "" {
-		level.Warn(logger).Log("msg", "The field msi_resource has been deprecated and should no longer be set")
-	}
+
 	return NewBucketWithConfig(logger, conf, component)
 }
 
