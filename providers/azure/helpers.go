@@ -24,6 +24,8 @@ func getContainerClient(conf Config) (*container.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+ 
+ 
 	opt := &container.ClientOptions{
 		ClientOptions: azcore.ClientOptions{
 			Retry: policy.RetryOptions{
@@ -53,12 +55,14 @@ func getContainerClient(conf Config) (*container.Client, error) {
 		return containerClient, nil
 	}
 
-	// Use MSI for authentication.
-	msiOpt := &azidentity.ManagedIdentityCredentialOptions{}
-	if conf.UserAssignedID != "" {
-		msiOpt.ID = azidentity.ClientID(conf.UserAssignedID)
-	}
-	cred, err := azidentity.NewManagedIdentityCredential(msiOpt)
+	// Use Workload Identity for authentication.
+
+	cred, err := azidentity.NewClientAssertionCredential(
+		conf.WorkloadIdentity.clientID,
+		conf.WorkloadIdentity.tenantID,
+		conf.WorkloadIdentity.getAssertion,
+		&azidentity.ClientAssertionCredentialOptions{ClientOptions: opt.ClientOptions})
+
 	if err != nil {
 		return nil, err
 	}
