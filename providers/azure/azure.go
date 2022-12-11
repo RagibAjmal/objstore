@@ -53,8 +53,6 @@ type Config struct {
 	PipelineConfig     PipelineConfig     `yaml:"pipeline_config"`
 	HTTPConfig         exthttp.HTTPConfig `yaml:"http_config"`
 	MSIResource        string             `yaml:"msi_resource"`
-
-	// Deprecated: Is automatically set by the Azure SDK.
 	WorkloadIdentity workloadIdentityCredential
 }
 

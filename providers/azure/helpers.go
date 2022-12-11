@@ -24,7 +24,8 @@ func getContainerClient(conf Config) (*container.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-
+ 
+ 
 	opt := &container.ClientOptions{
 		ClientOptions: azcore.ClientOptions{
 			Retry: policy.RetryOptions{
